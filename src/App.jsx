@@ -1,52 +1,112 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-// ─── MOCK DATA ────────────────────────────────────────────────────────────────
-const MOCK_USERS = {
-  "homeowner@test.com":    { password: "test", role: "homeowner", id: "h1" },
-  "control@safesight.com": { password: "test", role: "control",   id: "c1" },
-  "admin@safesight.com":   { password: "test", role: "admin",     id: "a1" },
+// ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+);
+
+// ─── CONTROL / ADMIN ACCOUNTS (still local — these aren't homeowners) ─────────
+const STAFF_USERS = {
+  "control@safesight.com": { password: "test", role: "control" },
+  "admin@safesight.com":   { password: "test", role: "admin"   },
 };
 
-const MOCK_CUSTOMERS = [
-  {
-    id: "h1", name: "Marcus Reid", phone: "07700 900123",
-    address: "14 Birchwood Lane, Manchester, M14 6PR",
-    status: "triggered", telegram_linked: true, device_id: "SS-PI-0042", joined: "2025-11-03",
-    emergency_contacts: [
-      { name: "Sandra Reid", phone: "07700 900456", relation: "Spouse" },
-      { name: "Tom Reid",    phone: "07700 900789", relation: "Son" },
-    ],
-    incidents: [
-      { id: "i1", time: "2026-02-21 00:49", status: "active",   ack: false, clip_url: null },
-      { id: "i2", time: "2026-02-20 23:11", status: "resolved", ack: true,  clip_url: "https://example.com/clip-i2.mp4" },
-      { id: "i3", time: "2026-02-19 14:32", status: "resolved", ack: true,  clip_url: "https://example.com/clip-i3.mp4" },
-    ],
-  },
-  {
-    id: "h2", name: "Priya Sharma", phone: "07800 112233",
-    address: "8 Ashton Road, Leeds, LS6 2HH",
-    status: "online", telegram_linked: true, device_id: "SS-PI-0051", joined: "2025-12-18",
-    emergency_contacts: [{ name: "Dev Sharma", phone: "07800 445566", relation: "Partner" }],
-    incidents: [
-      { id: "i4", time: "2026-02-18 09:22", status: "resolved", ack: true, clip_url: "https://example.com/clip-i4.mp4" },
-    ],
-  },
-  {
-    id: "h3", name: "James Okafor", phone: "07900 334455",
-    address: "32 Victoria Street, Birmingham, B1 1BB",
-    status: "offline", telegram_linked: false, device_id: "SS-PI-0067", joined: "2026-01-07",
-    emergency_contacts: [], incidents: [],
-  },
-  {
-    id: "h4", name: "Chloe Whitfield", phone: "07711 223344",
-    address: "5 Elm Grove, Bristol, BS6 6AA",
-    status: "online", telegram_linked: true, device_id: "SS-PI-0078", joined: "2026-02-01",
-    emergency_contacts: [{ name: "Rachel Whitfield", phone: "07711 556677", relation: "Mother" }],
-    incidents: [
-      { id: "i5", time: "2026-02-15 18:04", status: "resolved", ack: true, clip_url: "https://example.com/clip-i5.mp4" },
-    ],
-  },
-];
+// ─── DATA HOOKS ───────────────────────────────────────────────────────────────
+
+// Fetch all customers with their emergency contacts, incidents and device status
+function useCustomers() {
+  const [customers, setCustomers] = useState([]);
+  const [loading, setLoading]     = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      // customers + emergency_contacts (nested)
+      const { data: custs } = await supabase
+        .from("customers")
+        .select("*, emergency_contacts(*)")
+        .order("created_at", { ascending: false });
+
+      // all incidents
+      const { data: incs } = await supabase
+        .from("incidents")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      // all devices (for last_seen / status)
+      const { data: devs } = await supabase
+        .from("devices")
+        .select("*");
+
+      const incMap = {};
+      (incs || []).forEach(i => {
+        if (!incMap[i.customer_id]) incMap[i.customer_id] = [];
+        incMap[i.customer_id].push({
+          id:       i.id,
+          time:     new Date(i.created_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
+          status:   i.acknowledged ? "resolved" : "active",
+          ack:      i.acknowledged,
+          clip_url: i.clip_url,
+        });
+      });
+
+      const devMap = {};
+      (devs || []).forEach(d => { devMap[d.customer_id] = d; });
+
+      const merged = (custs || []).map(c => {
+        const dev        = devMap[c.id];
+        const lastSeen   = dev ? new Date(dev.last_seen) : null;
+        const minsAgo    = lastSeen ? (Date.now() - lastSeen) / 60000 : Infinity;
+        const hasOpenInc = (incMap[c.id] || []).some(i => !i.ack);
+        const status     = hasOpenInc ? "triggered" : minsAgo < 2 ? "online" : "offline";
+        return {
+          ...c,
+          status,
+          telegram_linked: !!c.telegram_chat_id,
+          device_id:       c.device_id || (dev ? dev.id : "—"),
+          joined:          c.created_at ? c.created_at.slice(0, 10) : "—",
+          emergency_contacts: c.emergency_contacts || [],
+          incidents:       incMap[c.id] || [],
+        };
+      });
+
+      setCustomers(merged);
+    } catch (e) {
+      console.error("useCustomers error:", e);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Poll every 15 seconds so the control room updates automatically
+  useEffect(() => {
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  return { customers, loading, reload: load };
+}
+
+// Acknowledge an incident
+async function acknowledgeIncident(incidentId) {
+  await supabase
+    .from("incidents")
+    .update({ acknowledged: true })
+    .eq("id", incidentId);
+}
+
+// Save emergency contacts for a customer (replace all)
+async function saveEmergencyContacts(customerId, contacts) {
+  await supabase.from("emergency_contacts").delete().eq("customer_id", customerId);
+  if (contacts.length > 0) {
+    await supabase.from("emergency_contacts").insert(
+      contacts.map(c => ({ ...c, customer_id: customerId }))
+    );
+  }
+}
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 const S = {
@@ -311,11 +371,69 @@ const Auth = ({ onLogin }) => {
   const [form, setForm] = useState({ name: "", phone: "", address: "", e1n: "", e1p: "", e1r: "", e2n: "", e2p: "", e2r: "" });
   const f = k => v => setForm(x => ({ ...x, [k]: v }));
 
-  const login = () => {
-    const u = MOCK_USERS[email.toLowerCase()];
-    if (!u || u.password !== pass) { setErr("Invalid email or password."); return; }
+  const [loading, setLoading] = useState(false);
+
+  const login = async () => {
     setErr("");
-    onLogin({ ...u, email, customer: MOCK_CUSTOMERS.find(c => c.id === u.id) || null });
+    setLoading(true);
+
+    // Staff accounts (control room / admin) — local check
+    const staff = STAFF_USERS[email.toLowerCase()];
+    if (staff) {
+      if (staff.password !== pass) { setErr("Invalid email or password."); setLoading(false); return; }
+      onLogin({ email, role: staff.role, customer: null });
+      setLoading(false);
+      return;
+    }
+
+    // Homeowner — authenticate via Supabase
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password: pass });
+    if (error) { setErr("Invalid email or password."); setLoading(false); return; }
+
+    // Load their customer record
+    const { data: cust } = await supabase
+      .from("customers")
+      .select("*, emergency_contacts(*)")
+      .eq("email", email)
+      .single();
+
+    onLogin({ email, role: "homeowner", supabaseUser: data.user, customerId: cust?.id || null });
+    setLoading(false);
+  };
+
+  const register = async () => {
+    setErr("");
+    setLoading(true);
+    try {
+      // 1. Create Supabase auth user
+      const { data, error } = await supabase.auth.signUp({ email, password: pass });
+      if (error) { setErr(error.message); setLoading(false); return; }
+
+      // 2. Insert customer row
+      const { data: cust, error: custErr } = await supabase
+        .from("customers")
+        .insert({ email, full_name: form.name, phone: form.phone, address: form.address })
+        .select()
+        .single();
+      if (custErr) { setErr("Account created but profile save failed. Please contact support."); setLoading(false); return; }
+
+      // 3. Insert emergency contacts
+      const contacts = [
+        form.e1n && { customer_id: cust.id, name: form.e1n, phone: form.e1p, relation: form.e1r },
+        form.e2n && { customer_id: cust.id, name: form.e2n, phone: form.e2p, relation: form.e2r },
+      ].filter(Boolean);
+      if (contacts.length > 0) {
+        await supabase.from("emergency_contacts").insert(contacts);
+      }
+
+      // 4. Done — go to login
+      setMode("login");
+      setErr("");
+      setStep(1);
+    } catch (e) {
+      setErr("Registration failed. Please try again.");
+    }
+    setLoading(false);
   };
 
   if (mode === "register") return (
@@ -399,7 +517,9 @@ const Auth = ({ onLogin }) => {
             <div className="tg-step"><div className="tg-num">3</div><div className="tg-text">Your account links automatically — alerts and clips arrive directly to your Telegram</div></div>
             <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
               <button className="btn btn-ghost" onClick={() => setStep(2)}>← Back</button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { setMode("login"); setErr(""); }}>Finish Setup ✓</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={register} disabled={loading}>
+                {loading ? "Creating account…" : "Finish Setup ✓"}
+              </button>
             </div>
           </>}
 
@@ -427,13 +547,9 @@ const Auth = ({ onLogin }) => {
           {err && <div style={{ background: "#fde8e4", color: S.accent, padding: "9px 13px", borderRadius: 8, fontSize: 14, marginBottom: 14 }}>{err}</div>}
           <div className="field"><label>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" onKeyDown={e => e.key === "Enter" && login()} /></div>
           <div className="field"><label>Password</label><input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="••••••••" onKeyDown={e => e.key === "Enter" && login()} /></div>
-          <button className="btn btn-primary btn-full" style={{ marginTop: 2 }} onClick={login}>Sign In</button>
-          <div style={{ marginTop: 14, padding: 13, background: S.mist, borderRadius: 8, fontSize: 13, color: S.steel }}>
-            <strong style={{ display: "block", marginBottom: 5, color: S.ink }}>Demo accounts</strong>
-            <div><strong>Homeowner:</strong> homeowner@test.com / test</div>
-            <div><strong>Control Room:</strong> control@safesight.com / test</div>
-            <div><strong>Admin:</strong> admin@safesight.com / test</div>
-          </div>
+          <button className="btn btn-primary btn-full" style={{ marginTop: 2 }} onClick={login} disabled={loading}>
+            {loading ? "Signing in…" : "Sign In"}
+          </button>
           <div className="auth-switch">New customer? <button onClick={() => setMode("register")}>Create account</button></div>
         </div>
       </div>
@@ -460,7 +576,60 @@ const HomeownerDash = ({ user }) => {
   const [tab, setTab] = useState("overview");
   const [showTg, setShowTg] = useState(false);
   const [playingClip, setPlayingClip] = useState(null);
-  const c = user.customer || MOCK_CUSTOMERS[0];
+  const [c, setC] = useState(null);
+  const [loadingData, setLoadingData] = useState(true);
+
+  const loadCustomer = useCallback(async () => {
+    if (!user.customerId) { setLoadingData(false); return; }
+    const { data: cust } = await supabase
+      .from("customers")
+      .select("*, emergency_contacts(*)")
+      .eq("id", user.customerId)
+      .single();
+    const { data: incs } = await supabase
+      .from("incidents")
+      .select("*")
+      .eq("customer_id", user.customerId)
+      .order("created_at", { ascending: false });
+    const { data: dev } = await supabase
+      .from("devices")
+      .select("*")
+      .eq("customer_id", user.customerId)
+      .single();
+
+    const incidents = (incs || []).map(i => ({
+      id:       i.id,
+      time:     new Date(i.created_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
+      status:   i.acknowledged ? "resolved" : "active",
+      ack:      i.acknowledged,
+      clip_url: i.clip_url,
+    }));
+
+    const lastSeen = dev?.last_seen ? new Date(dev.last_seen) : null;
+    const minsAgo  = lastSeen ? (Date.now() - lastSeen) / 60000 : Infinity;
+    const hasOpen  = incidents.some(i => !i.ack);
+    const status   = hasOpen ? "triggered" : minsAgo < 2 ? "online" : "offline";
+
+    setC({
+      ...cust,
+      status,
+      telegram_linked:    !!cust.telegram_chat_id,
+      device_id:          cust.device_id || (dev ? dev.id : "—"),
+      joined:             cust.created_at?.slice(0, 10) || "—",
+      emergency_contacts: cust.emergency_contacts || [],
+      incidents,
+    });
+    setLoadingData(false);
+  }, [user.customerId]);
+
+  useEffect(() => { loadCustomer(); }, [loadCustomer]);
+  useEffect(() => {
+    const t = setInterval(loadCustomer, 15000);
+    return () => clearInterval(t);
+  }, [loadCustomer]);
+
+  if (loadingData) return <div style={{ padding: 40, textAlign: "center", color: S.steel }}>Loading your account…</div>;
+  if (!c) return <div style={{ padding: 40, textAlign: "center", color: S.steel }}>Account not found. Contact support.</div>;
 
   const tabs = [
     { id: "overview",  n: "home",     l: "Overview" },
@@ -691,16 +860,13 @@ const ControlDash = () => {
   const [tab, setTab] = useState("alerts");
   const [sel, setSel] = useState(null);
   const [playingClip, setPlayingClip] = useState(null);
-  const [custs, setCusts] = useState(MOCK_CUSTOMERS);
+  const { customers: custs, reload } = useCustomers();
 
   const triggered = custs.filter(c => c.status === "triggered");
 
-  const ack = (cid, iid) => {
-    setCusts(cs => cs.map(c => c.id !== cid ? c : {
-      ...c,
-      status: c.incidents.filter(i => i.id !== iid && !i.ack).length > 0 ? "triggered" : "online",
-      incidents: c.incidents.map(i => i.id !== iid ? i : { ...i, ack: true, status: "resolved" }),
-    }));
+  const ack = async (cid, iid) => {
+    await acknowledgeIncident(iid);
+    reload();
   };
 
   const tabs = [
@@ -915,6 +1081,7 @@ const ControlDash = () => {
 // ─── ADMIN DASHBOARD ──────────────────────────────────────────────────────────
 const AdminDash = () => {
   const [tab, setTab] = useState("overview");
+  const { customers: MOCK_CUSTOMERS } = useCustomers();
   const tabs = [
     { id: "overview",  n: "shield",   l: "Overview" },
     { id: "customers", n: "users",    l: "Customers" },
