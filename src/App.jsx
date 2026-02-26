@@ -657,7 +657,7 @@ const HomeownerDash = ({ user }) => {
 
         {tab === "overview" && <>
           <div className="page-header">
-            <h1>Good evening, {c.name.split(" ")[0]} 👋</h1>
+            <h1>Good evening, {(c.name || "there").split(" ")[0]} 👋</h1>
             <p>Your home security overview</p>
           </div>
 
@@ -770,7 +770,7 @@ const HomeownerDash = ({ user }) => {
             {c.emergency_contacts.map((ec, i) => (
               <div key={i} className="card">
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  <div className="avatar" style={{ width: 38, height: 38, fontSize: 14 }}>{ec.name[0]}</div>
+                  <div className="avatar" style={{ width: 38, height: 38, fontSize: 14 }}>{(ec.name || "?")[0]}</div>
                   <div>
                     <div style={{ fontWeight: 500 }}>{ec.name}</div>
                     <div style={{ fontSize: 12, color: S.steel, fontFamily: "'DM Mono',monospace" }}>{ec.relation}</div>
@@ -889,7 +889,7 @@ const ControlDash = () => {
         <div className="main">
           <button className="back-btn" onClick={() => setSel(null)}>← Back to customers</button>
           <div className="detail-header">
-            <div className="avatar" style={{ width: 48, height: 48, fontSize: 18 }}>{c.name[0]}</div>
+            <div className="avatar" style={{ width: 48, height: 48, fontSize: 18 }}>{(c.name || "?")[0]}</div>
             <div>
               <div className="detail-name">{c.name}</div>
               <div className="detail-sub">{c.device_id} · {c.address}</div>
@@ -1024,7 +1024,7 @@ const ControlDash = () => {
                   <tr key={c.id}>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                        <div className="avatar" style={{ width: 30, height: 30, fontSize: 12 }}>{c.name[0]}</div>
+                        <div className="avatar" style={{ width: 30, height: 30, fontSize: 12 }}>{(c.name || "?")[0]}</div>
                         <div>
                           <div style={{ fontWeight: 500 }}>{c.name}</div>
                           <div style={{ fontSize: 12, color: S.steel, fontFamily: "'DM Mono',monospace" }}>{c.phone}</div>
@@ -1049,7 +1049,7 @@ const ControlDash = () => {
         {tab === "activity" && <>
           <div className="page-header"><h1>Clip Log</h1><p>All incidents across all customers</p></div>
           <div className="card">
-            {custs.flatMap(c => c.incidents.map(i => ({ ...i, cname: c.name, addr: c.address, cid: c.id })))
+            {custs.flatMap(c => (c.incidents || []).map(i => ({ ...i, cname: c.name || "Unknown", addr: c.address, cid: c.id })))
               .sort((a, b) => b.time.localeCompare(a.time))
               .map(ev => (
                 <div key={ev.id} className="alert-row">
@@ -1124,7 +1124,7 @@ const AdminDash = () => {
               <div className="section-title">Needs Attention</div>
               {MOCK_CUSTOMERS.filter(c => !c.telegram_linked || c.status === "offline").map(c => (
                 <div key={c.id} className="alert-row">
-                  <div className="avatar" style={{ width: 28, height: 28, fontSize: 11 }}>{c.name[0]}</div>
+                  <div className="avatar" style={{ width: 28, height: 28, fontSize: 11 }}>{(c.name || "?")[0]}</div>
                   <div className="alert-info">
                     <div className="alert-title" style={{ fontSize: 13 }}>{c.name}</div>
                     <div className="alert-meta">
