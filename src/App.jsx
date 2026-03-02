@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
@@ -44,11 +44,12 @@ function useCustomers() {
       (incs || []).forEach(i => {
         if (!incMap[i.customer_id]) incMap[i.customer_id] = [];
         incMap[i.customer_id].push({
-          id:       i.id,
-          time:     new Date(i.created_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
-          status:   i.acknowledged ? "resolved" : "active",
-          ack:      i.acknowledged,
-          clip_url: i.clip_url,
+          id:               i.id,
+          time:             new Date(i.created_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
+          status:           i.acknowledged ? "resolved" : "active",
+          ack:              i.acknowledged,
+          clip_url:         i.clip_url,
+          face_snapshot_url: i.face_snapshot_url || null,
         });
       });
 
@@ -90,7 +91,34 @@ function useCustomers() {
   return { customers, loading, reload: load };
 }
 
-// Acknowledge an incident
+// Fetch known faces for a specific customer
+function useKnownFaces(customerId) {
+  const [faces, setFaces]   = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    if (!customerId) { setLoading(false); return; }
+    setLoading(true);
+    try {
+      const { data } = await supabase
+        .from("known_faces")
+        .select("*")
+        .eq("customer_id", customerId)
+        .order("name");
+      setFaces(data || []);
+    } catch (e) {
+      console.error("useKnownFaces error:", e);
+    }
+    setLoading(false);
+  }, [customerId]);
+
+  useEffect(() => { load(); }, [load]);
+  return { faces, loading, reload: load };
+}
+
+async function deleteKnownFace(faceId) {
+  await supabase.from("known_faces").delete().eq("id", faceId);
+}
 async function acknowledgeIncident(incidentId) {
   await supabase
     .from("incidents")
@@ -361,6 +389,191 @@ const ClipModal = ({ incident, onClose }) => (
   </div>
 );
 
+// ─── FACES PAGE ───────────────────────────────────────────────────────────────
+const FacesPage = ({ customerId, customerName, deviceId }) => {
+  const { faces, loading, reload } = useKnownFaces(customerId);
+  const [deleting, setDeleting]   = useState(null);
+  const [adding, setAdding]       = useState(false);
+  const [newName, setNewName]     = useState("");
+  const [captureStatus, setCaptureStatus] = useState(null); // null | string
+  const [requestId, setRequestId] = useState(null);
+  const pollRef = useRef(null);
+
+  // Poll for capture request status while one is in progress
+  useEffect(() => {
+    if (!requestId) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const { data } = await supabase
+          .from("capture_requests")
+          .select("status")
+          .eq("id", requestId)
+          .single();
+        if (data) {
+          setCaptureStatus(data.status);
+          if (data.status === "done") {
+            clearInterval(pollRef.current);
+            setRequestId(null);
+            setAdding(false);
+            setNewName("");
+            await reload();
+          } else if (data.status.startsWith("failed")) {
+            clearInterval(pollRef.current);
+            setRequestId(null);
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(pollRef.current);
+  }, [requestId, reload]);
+
+  const handleAdd = async () => {
+    if (!newName.trim()) return;
+    if (!deviceId || deviceId === "—") {
+      alert("No device linked to this account. Link a device first in Account Settings.");
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from("capture_requests")
+        .insert({ device_id: deviceId, person_name: newName.trim(), status: "pending" })
+        .select()
+        .single();
+      if (error) throw error;
+      setRequestId(data.id);
+      setCaptureStatus("pending");
+    } catch (e) {
+      alert("Failed to send capture request. Check your connection.");
+    }
+  };
+
+  const handleDelete = async (face) => {
+    if (!window.confirm(`Remove ${face.name} from known faces?`)) return;
+    setDeleting(face.id);
+    await deleteKnownFace(face.id);
+    await reload();
+    setDeleting(null);
+  };
+
+  const statusLabel = {
+    pending:   { text: "⏳  Waiting for Pi to respond…",              color: S.warn  },
+    capturing: { text: "📸  Capturing photos — stand in front of the camera!", color: S.accent },
+    training:  { text: "🧠  Training the model — almost done…",       color: "#0072C6" },
+    done:      { text: "✅  Done! Face added successfully.",           color: S.safe  },
+  }[captureStatus] || (captureStatus?.startsWith("failed")
+    ? { text: "❌  " + captureStatus, color: S.accent }
+    : null);
+
+  return (
+    <>
+      <div className="page-header">
+        <h1>Known Faces</h1>
+        <p>People recognised by {customerName ? `${customerName}'s` : "the"} SafeSight system</p>
+      </div>
+
+      {/* Add Person UI */}
+      {!adding && !requestId && (
+        <button className="btn btn-primary" style={{ marginBottom: 20, gap: 7 }}
+          onClick={() => { setAdding(true); setCaptureStatus(null); }}>
+          <Icon n="plus" s={14} /> Add Person
+        </button>
+      )}
+
+      {(adding || requestId) && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="section-title">Add a Known Person</div>
+          {!requestId ? (
+            <>
+              <p style={{ fontSize: 13, color: S.steel, marginBottom: 14, lineHeight: 1.6 }}>
+                Type the person's name below, then click <strong>Start Capture</strong>.
+                The Pi camera will automatically take 20 photos — ask the person to
+                stand in front of the camera and look at it while it captures.
+              </p>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  className="field"
+                  style={{ flex: 1, minWidth: 200, padding: "10px 13px", border: `1.5px solid ${S.border}`, borderRadius: 9, fontSize: 15, fontFamily: "'DM Sans',sans-serif" }}
+                  placeholder="e.g. John Smith"
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handleAdd()}
+                />
+                <button className="btn btn-primary" onClick={handleAdd} disabled={!newName.trim()}>
+                  📸 Start Capture
+                </button>
+                <button className="btn btn-ghost" onClick={() => { setAdding(false); setNewName(""); }}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={{ padding: "8px 0" }}>
+              {statusLabel && (
+                <div style={{ fontSize: 15, fontWeight: 500, color: statusLabel.color, marginBottom: 10 }}>
+                  {statusLabel.text}
+                </div>
+              )}
+              {captureStatus === "capturing" && (
+                <p style={{ fontSize: 13, color: S.steel, lineHeight: 1.6 }}>
+                  Make sure <strong>{newName}</strong> is standing directly in front of the camera,
+                  facing it, in good lighting. The Pi will take 20 photos automatically.
+                </p>
+              )}
+              {captureStatus !== "done" && !captureStatus?.startsWith("failed") && (
+                <div style={{ marginTop: 10, height: 6, background: S.mist, borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%", borderRadius: 3, background: S.accent,
+                    width: captureStatus === "pending" ? "15%" : captureStatus === "capturing" ? "50%" : "85%",
+                    transition: "width 0.5s ease",
+                  }} />
+                </div>
+              )}
+              {captureStatus?.startsWith("failed") && (
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }}
+                  onClick={() => { setCaptureStatus(null); setRequestId(null); }}>
+                  Try Again
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading
+        ? <div className="empty">Loading faces…</div>
+        : faces.length === 0
+          ? <div className="empty" style={{ padding: 60 }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>👤</div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>No known faces yet</div>
+              <div style={{ fontSize: 13 }}>Click Add Person above to get started.</div>
+            </div>
+          : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 16 }}>
+              {faces.map(face => (
+                <div key={face.id} className="card" style={{ padding: 0, overflow: "hidden", textAlign: "center" }}>
+                  {face.photo_url
+                    ? <img src={face.photo_url} alt={face.name}
+                           style={{ width: "100%", height: 160, objectFit: "cover", display: "block" }} />
+                    : <div style={{ width: "100%", height: 160, background: S.mist, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 48 }}>👤</div>
+                  }
+                  <div style={{ padding: "10px 12px" }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, fontFamily: "'Syne',sans-serif" }}>{face.name}</div>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      style={{ marginTop: 8, width: "100%", fontSize: 12 }}
+                      disabled={deleting === face.id}
+                      onClick={() => handleDelete(face)}
+                    >
+                      {deleting === face.id ? "Removing…" : "Remove"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+      }
+    </>
+  );
+};
+
 // ─── AUTH SCREEN ──────────────────────────────────────────────────────────────
 const Auth = ({ onLogin }) => {
   const [mode, setMode] = useState("login");
@@ -598,11 +811,12 @@ const HomeownerDash = ({ user }) => {
       .single();
 
     const incidents = (incs || []).map(i => ({
-      id:       i.id,
-      time:     new Date(i.created_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
-      status:   i.acknowledged ? "resolved" : "active",
-      ack:      i.acknowledged,
-      clip_url: i.clip_url,
+      id:               i.id,
+      time:             new Date(i.created_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
+      status:           i.acknowledged ? "resolved" : "active",
+      ack:              i.acknowledged,
+      clip_url:         i.clip_url,
+      face_snapshot_url: i.face_snapshot_url || null,
     }));
 
     const lastSeen = dev?.last_seen ? new Date(dev.last_seen) : null;
@@ -635,6 +849,7 @@ const HomeownerDash = ({ user }) => {
     { id: "overview",  n: "home",     l: "Overview" },
     { id: "incidents", n: "video",    l: "Clip History" },
     { id: "contacts",  n: "phone",    l: "Contacts" },
+    { id: "faces",     n: "users",    l: "Known Faces" },
     { id: "account",   n: "settings", l: "Account" },
   ];
 
@@ -737,7 +952,10 @@ const HomeownerDash = ({ user }) => {
               ? <div className="empty">No incidents recorded yet</div>
               : c.incidents.map(inc => (
                 <div key={inc.id} style={{ padding: "14px 0", borderBottom: `1px solid ${S.border}`, display: "flex", alignItems: "center", gap: 11 }} className="incident-item">
-                  <div className={`alert-dot ${inc.status}`} />
+                  {inc.face_snapshot_url
+                    ? <img src={inc.face_snapshot_url} alt="Unknown face" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", flexShrink: 0, border: `2px solid ${S.border}` }} />
+                    : <div className={`alert-dot ${inc.status}`} />
+                  }
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 14, fontWeight: 500 }}>Unknown person detected</div>
                     <div style={{ fontSize: 12, color: S.steel, fontFamily: "'DM Mono',monospace", marginTop: 2 }}>{inc.time}</div>
@@ -786,6 +1004,8 @@ const HomeownerDash = ({ user }) => {
             )}
           </div>
         </>}
+
+        {tab === "faces" && <FacesPage customerId={c.id} customerName={c.name} deviceId={c.device_id} />}
 
         {tab === "account" && <>
           <div className="page-header"><h1>Account Settings</h1><p>Manage your personal information</p></div>
@@ -872,6 +1092,7 @@ const ControlDash = () => {
   const tabs = [
     { id: "alerts",    n: "bell",     l: "Live Alerts" },
     { id: "customers", n: "users",    l: "All Customers" },
+    { id: "faces",     n: "camera",   l: "Known Faces" },
     { id: "activity",  n: "activity", l: "Clip Log" },
   ];
 
@@ -924,7 +1145,10 @@ const ControlDash = () => {
               ? <div className="empty">No incidents recorded</div>
               : c.incidents.map(inc => (
                 <div key={inc.id} className="alert-row">
-                  <div className={`alert-dot ${inc.status}`} />
+                  {inc.face_snapshot_url
+                    ? <img src={inc.face_snapshot_url} alt="Unknown face" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", flexShrink: 0, border: `2px solid ${S.border}` }} />
+                    : <div className={`alert-dot ${inc.status}`} />
+                  }
                   <div className="alert-info">
                     <div className="alert-title">Unknown person detected</div>
                     <div className="alert-meta">{inc.time}</div>
@@ -1044,6 +1268,23 @@ const ControlDash = () => {
               </tbody>
             </table>
           </div>
+        </>}
+
+        {tab === "faces" && <>
+          <div className="page-header"><h1>Known Faces</h1><p>All recognised people across all customers</p></div>
+          {custs.length === 0
+            ? <div className="empty">No customers yet</div>
+            : custs.map(c => (
+                <div key={c.id} style={{ marginBottom: 28 }}>
+                  <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                    <div className="avatar" style={{ width: 28, height: 28, fontSize: 11 }}>{(c.name || "?")[0]}</div>
+                    {c.name || "Unknown Customer"}
+                    <span className="chip" style={{ fontSize: 11 }}>{c.device_id}</span>
+                  </div>
+                  <FacesPage customerId={c.id} customerName={c.name} deviceId={c.device_id} />
+                </div>
+              ))
+          }
         </>}
 
         {tab === "activity" && <>
