@@ -483,17 +483,17 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
       </div>
 
       {/* Add Person UI */}
-      {!adding && !requestId && (
+      {!adding && !captureStatus && (
         <button className="btn btn-primary" style={{ marginBottom: 20, gap: 7 }}
           onClick={() => { setAdding(true); setCaptureStatus(null); }}>
           <Icon n="plus" s={14} /> Add Person
         </button>
       )}
 
-      {(adding || requestId) && (
+      {(adding || captureStatus) && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="section-title">Add a Known Person</div>
-          {!requestId ? (
+          {!captureStatus ? (
             <>
               <p style={{ fontSize: 13, color: S.steel, marginBottom: 14, lineHeight: 1.6 }}>
                 Type the person's name below, then click <strong>Start Capture</strong>.
