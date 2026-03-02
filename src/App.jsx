@@ -395,37 +395,47 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
   const [deleting, setDeleting]   = useState(null);
   const [adding, setAdding]       = useState(false);
   const [newName, setNewName]     = useState("");
-  const [captureStatus, setCaptureStatus] = useState(null); // null | string
-  const [requestId, setRequestId] = useState(null);
-  const pollRef = useRef(null);
+  const [captureStatus, setCaptureStatus] = useState(null);
+  const [captureError, setCaptureError]   = useState(null);
+  const requestIdRef = useRef(null);
+  const pollRef      = useRef(null);
 
-  // Poll for capture request status while one is in progress
-  useEffect(() => {
-    if (!requestId) return;
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  const startPolling = (id) => {
+    stopPolling();
+    requestIdRef.current = id;
     pollRef.current = setInterval(async () => {
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("capture_requests")
           .select("status")
-          .eq("id", requestId)
+          .eq("id", requestIdRef.current)
           .single();
+        if (error) throw error;
         if (data) {
           setCaptureStatus(data.status);
           if (data.status === "done") {
-            clearInterval(pollRef.current);
-            setRequestId(null);
+            stopPolling();
             setAdding(false);
             setNewName("");
-            await reload();
+            setCaptureStatus(null);
+            reload();
           } else if (data.status.startsWith("failed")) {
-            clearInterval(pollRef.current);
-            setRequestId(null);
+            stopPolling();
+            setCaptureError("Capture failed — no face detected. Stand in front of the camera and try again.");
+            setCaptureStatus(null);
           }
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        console.error("Poll error:", e);
+      }
     }, 2000);
-    return () => clearInterval(pollRef.current);
-  }, [requestId, reload]);
+  };
+
+  useEffect(() => () => stopPolling(), []);
 
   const handleAdd = async () => {
     if (!newName.trim()) return;
@@ -433,6 +443,7 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
       alert("No device linked to this account. Link a device first in Account Settings.");
       return;
     }
+    setCaptureError(null);
     try {
       const { data, error } = await supabase
         .from("capture_requests")
@@ -440,10 +451,10 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
         .select()
         .single();
       if (error) throw error;
-      setRequestId(data.id);
       setCaptureStatus("pending");
+      startPolling(data.id);
     } catch (e) {
-      alert("Failed to send capture request. Check your connection.");
+      setCaptureError("Failed to send capture request. Check your connection.");
     }
   };
 
@@ -528,9 +539,12 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
                   }} />
                 </div>
               )}
+              {captureError && (
+                <div style={{ fontSize: 13, color: S.accent, marginTop: 8 }}>{captureError}</div>
+              )}
               {captureStatus?.startsWith("failed") && (
                 <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }}
-                  onClick={() => { setCaptureStatus(null); setRequestId(null); }}>
+                  onClick={() => { setCaptureStatus(null); setCaptureError(null); }}>
                   Try Again
                 </button>
               )}
