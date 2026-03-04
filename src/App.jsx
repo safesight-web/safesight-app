@@ -497,8 +497,9 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
             <>
               <p style={{ fontSize: 13, color: S.steel, marginBottom: 14, lineHeight: 1.6 }}>
                 Type the person's name below, then click <strong>Start Capture</strong>.
-                The Pi camera will automatically take 20 photos — ask the person to
-                stand in front of the camera and look at it while it captures.
+                The camera will take <strong>60 photos over ~30 seconds</strong> — ask the person to
+                slowly move through different poses: face forward, turn left and right,
+                tilt up and down, and step closer and further from the camera.
               </p>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <input
@@ -525,10 +526,19 @@ const FacesPage = ({ customerId, customerName, deviceId }) => {
                 </div>
               )}
               {captureStatus === "capturing" && (
-                <p style={{ fontSize: 13, color: S.steel, lineHeight: 1.6 }}>
-                  Make sure <strong>{newName}</strong> is standing directly in front of the camera,
-                  facing it, in good lighting. The Pi will take 20 photos automatically.
-                </p>
+                <div style={{ fontSize: 13, color: S.steel, lineHeight: 1.8 }}>
+                  <strong>{newName}</strong> — slowly move through these poses over 30 seconds:
+                  <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 16px" }}>
+                    <span>👀 Face straight at camera</span>
+                    <span>↙️ Turn head left</span>
+                    <span>↘️ Turn head right</span>
+                    <span>⬆️ Tilt head up</span>
+                    <span>⬇️ Tilt head down</span>
+                    <span>🔍 Step closer</span>
+                    <span>🔭 Step back further</span>
+                    <span>😐 Neutral expression</span>
+                  </div>
+                </div>
               )}
               {captureStatus !== "done" && !captureStatus?.startsWith("failed") && (
                 <div style={{ marginTop: 10, height: 6, background: S.mist, borderRadius: 3, overflow: "hidden" }}>
